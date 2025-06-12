@@ -24,6 +24,22 @@ app = FastAPI()
 async def health_check():
     return {"status": "ok"}
 
+
+from pydantic import BaseModel
+
+class TestURLRequest(BaseModel):
+    url: str
+
+@app.post("/test-url")
+async def test_url(request: TestURLRequest):
+    server = MCPPentestServer()
+    db = next(server.get_db())
+    try:
+        results = await server._full_recon({"url": request.url}, db)
+        return {"status": "success", "results": results}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 class MCPPentestServer:
     def __init__(self):
         self.config = Config()
@@ -338,8 +354,6 @@ class MCPPentestServer:
 
 async def main():
     server = MCPPentestServer()
-    
-    # Use stdio_server as a context manager to handle streams
     async with stdio_server() as (read_stream, write_stream):
         await server.server.run(
             read_stream,
