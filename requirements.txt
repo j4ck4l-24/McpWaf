@@ -1,0 +1,13 @@
+psycopg2-binary
+sqlalchemy
+requests
+beautifulsoup4
+docker
+aiohttp
+pydantic
+selenium
+lxml
+openai
+anthropic
+mcp
+fastapi
