@@ -4,8 +4,7 @@ import json
 import tempfile
 import os
 from typing import Dict, List, Any
-from ..config import Config
-
+from meramodule.config import Config
 class AdvancedScanner:
     def __init__(self):
         self.config = Config()
@@ -194,42 +193,64 @@ class AdvancedScanner:
         return {'tool': 'tplmap', 'results': results}
     
     def run_directory_enumeration(self, url: str) -> Dict[str, Any]:
-        wordlist_path = f"{self.config.WORDLIST_DIR}/directories.txt"
+        wordlist_path = '/app/wordlists/directories.txt'
         
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        if not os.path.exists(wordlist_path):
+            return {
+                'tool': 'ffuf',
+                'error': f'Wordlist not found at {wordlist_path}',
+                'results': []
+            }
+
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', dir='/tmp', delete=False) as f:
             output_file = f.name
         
         cmd = [
             'ffuf',
-            '-u', f"{url}/FUZZ",
+            '-u', f"{url.rstrip('/')}/FUZZ",
             '-w', wordlist_path,
             '-o', output_file,
             '-of', 'json',
             '-mc', '200,204,301,302,307,401,403',
-            '-t', '50'
+            '-t', '40',
+            '-v'
         ]
         
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-            
+            result = subprocess.run(
+                cmd,
+                cwd='/app',
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=300
+            )
+
+            if result.returncode != 0:
+                return {
+                    'tool': 'ffuf',
+                    'error': f"FFUF failed (code {result.returncode}): {result.stderr}",
+                    'command': ' '.join(cmd),
+                    'results': []
+                }
+
             with open(output_file, 'r') as f:
                 ffuf_results = json.load(f)
-            
-            os.unlink(output_file)
-            
-            directories = []
-            for item in ffuf_results.get('results', []):
-                directories.append({
-                    'url': item.get('url', ''),
-                    'status_code': item.get('status', 0),
-                    'content_length': item.get('length', 0),
-                    'words': item.get('words', 0),
-                    'lines': item.get('lines', 0)
-                })
-            
-            return {'tool': 'ffuf', 'results': directories}
-            
+                return {
+                    'tool': 'ffuf',
+                    'results': [{
+                        'url': r['url'],
+                        'status_code': r['status'],  # Fixed field name
+                        'content_length': r['length']
+                    } for r in ffuf_results.get('results', [])]
+                }
+                
         except Exception as e:
+            return {
+                'tool': 'ffuf',
+                'error': f"Execution failed: {str(e)}",
+                'results': []
+            }
+        finally:
             if os.path.exists(output_file):
                 os.unlink(output_file)
-            return {'tool': 'ffuf', 'error': str(e), 'results': []}

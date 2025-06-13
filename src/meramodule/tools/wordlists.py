@@ -1,7 +1,6 @@
 import os
 from typing import List
-from src.config import Config
-
+from meramodule.config import Config
 class WordlistManager:
     def __init__(self):
         self.config = Config()

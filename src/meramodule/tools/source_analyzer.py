@@ -3,6 +3,7 @@ from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
 import re
 import json
 from urllib.parse import urljoin, urlparse
@@ -28,10 +29,15 @@ class SourceAnalyzer:
     
     def _static_analysis(self, url: str) -> Dict[str, Any]:
         try:
-            response = self.session.get(url, timeout=10)
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+            response = self.session.get(url, headers=headers, timeout=10)
+            response.raise_for_status()  # Raise exception for bad status codes
+            
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            return {
+            analysis = {
                 'js_files': self._extract_js_files(soup, url),
                 'css_files': self._extract_css_files(soup, url),
                 'forms': self._extract_forms(soup),
@@ -40,51 +46,68 @@ class SourceAnalyzer:
                 'comments': self._extract_comments(response.text),
                 'meta_tags': self._extract_meta_tags(soup),
                 'api_hints': self._find_api_hints(response.text),
-                'sensitive_patterns': self._find_sensitive_patterns(response.text)
+                'sensitive_patterns': self._find_sensitive_patterns(response.text),
+                'headers': dict(response.headers)  # Include response headers
             }
+            
+            return analysis
+            
         except Exception as e:
-            return {'error': str(e)}
+            return {'error': str(e), 'status_code': getattr(e.response, 'status_code', None) if hasattr(e, 'response') else None}
     
     def _dynamic_analysis(self, url: str) -> Dict[str, Any]:
+        options = Options()
+        options.add_argument('--headless')
+        options.add_argument('--no-sandbox')
+        options.add_argument('--disable-dev-shm-usage')
+        options.add_argument('--disable-gpu')
+        
+        # Enable performance logging
+        options.set_capability('goog:loggingPrefs', {'performance': 'ALL', 'browser': 'ALL'})
+        
+        driver = None
         try:
-            driver = webdriver.Chrome(options=self.chrome_options)
+            driver = webdriver.Chrome(options=options)
+            driver.set_page_load_timeout(30)
+            
+            # Enable Network and Performance domains
+            driver.execute_cdp_cmd('Network.enable', {})
+            driver.execute_cdp_cmd('Performance.enable', {})
+            
+            network_requests = []
+            
+            def handle_request_will_be_sent(**kwargs):
+                network_requests.append({
+                    'url': kwargs.get('request', {}).get('url'),
+                    'method': kwargs.get('request', {}).get('method'),
+                    'type': kwargs.get('type')
+                })
+            
+            # Add listener for network requests
+            driver.add_cdp_listener('Network.requestWillBeSent', handle_request_will_be_sent)
+            
             driver.get(url)
             
-            network_requests = driver.execute_script("""
-                return performance.getEntriesByType('resource').map(entry => ({
-                    name: entry.name,
-                    initiatorType: entry.initiatorType,
-                    transferSize: entry.transferSize
-                }));
-            """)
+            # Wait for page load
+            WebDriverWait(driver, 10).until(
+                lambda d: d.execute_script('return document.readyState') == 'complete'
+            )
             
+            # Get console logs
             console_logs = driver.get_log('browser')
-            
-            ajax_endpoints = driver.execute_script("""
-                var endpoints = [];
-                var originalXHR = window.XMLHttpRequest;
-                window.XMLHttpRequest = function() {
-                    var xhr = new originalXHR();
-                    var originalOpen = xhr.open;
-                    xhr.open = function(method, url) {
-                        endpoints.push({method: method, url: url});
-                        return originalOpen.apply(xhr, arguments);
-                    };
-                    return xhr;
-                };
-                return endpoints;
-            """)
-            
-            driver.quit()
             
             return {
                 'network_requests': network_requests,
                 'console_logs': console_logs,
-                'ajax_endpoints': ajax_endpoints,
-                'loaded_scripts': self._extract_loaded_scripts(network_requests)
+                'page_title': driver.title,
+                'cookies': driver.get_cookies()
             }
+            
         except Exception as e:
             return {'error': str(e)}
+        finally:
+            if driver:
+                driver.quit()
     
     def _extract_js_files(self, soup: BeautifulSoup, base_url: str) -> List[Dict]:
         js_files = []
